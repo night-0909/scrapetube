@@ -1,4 +1,4 @@
-import json
+import json, re
 import time
 from typing import Generator
 
@@ -9,6 +9,12 @@ type_property_map = {
     "videos": "videoRenderer",
     "streams": "videoRenderer",
     "shorts": "reelWatchEndpoint"
+}
+
+tabs_url_map = {
+    "videos": "/@(.*)/videos",
+    "streams": "/@(.*)/streams",
+    "shorts": "/@(.*)/shorts"
 }
 
 def get_channel(
@@ -76,7 +82,8 @@ def get_channel(
         content_type=content_type,
     )
     api_endpoint = "https://www.youtube.com/youtubei/v1/browse"
-    videos = get_videos(url, api_endpoint, "contents", type_property_map[content_type], limit, sleep, proxies, sort_by)
+       
+    videos = get_videos(url, api_endpoint, "contents", type_property_map[content_type], content_type, limit, sleep, proxies, sort_by)
     for video in videos:
         yield video
 
@@ -105,7 +112,7 @@ def get_playlist(
 
     url = f"https://www.youtube.com/playlist?list={playlist_id}"
     api_endpoint = "https://www.youtube.com/youtubei/v1/browse"
-    videos = get_videos(url, api_endpoint, "playlistVideoListRenderer", "playlistVideoRenderer", limit, sleep, proxies)
+    videos = get_videos(url, api_endpoint, "playlistVideoListRenderer", "playlistVideoRenderer", None, limit, sleep, proxies)
     for video in videos:
         yield video
 
@@ -168,7 +175,7 @@ def get_search(
     url = f"https://www.youtube.com/results?search_query={query}&sp={param_string}"
     api_endpoint = "https://www.youtube.com/youtubei/v1/search"
     videos = get_videos(
-        url, api_endpoint, "contents", results_type_map[results_type][1], limit, sleep, proxies
+        url, api_endpoint, "contents", results_type_map[results_type][1], None, limit, sleep, proxies
     )
     for video in videos:
         yield video
@@ -202,7 +209,7 @@ def get_video(
 
 
 def get_videos(
-    url: str, api_endpoint: str, selector_list: str, selector_item: str, limit: int, sleep: float, proxies: dict = None, sort_by: str = None
+    url: str, api_endpoint: str, selector_list: str, selector_item: str, content_type: str, limit: int, sleep: float, proxies: dict = None, sort_by: str = None
 ) -> Generator[dict, None, None]:
     session = get_session(proxies)
     is_first = True
@@ -220,17 +227,51 @@ def get_videos(
             data = json.loads(
                 get_json_from_html(html, "var ytInitialData = ", 0, "};") + "}"
             )
+            
+            # For get_channel we search "contents"
             data = next(search_dict(data, selector_list), None)
-            next_data = get_next_data(data, sort_by)
+                        
+            # When content_type is specified (only in get_channel()), verify that channel has a Tab for content we are looking for and is the selected Tab.
+            if content_type is not None:
+                tabFound = False
+                if data is not None:
+                    for tab in data["twoColumnBrowseResultsRenderer"]["tabs"]:
+                        # endpoint can be missing if no Home tab and /videos is scraped, with channel has no content at all
+                        if "tabRenderer" in tab and "endpoint" in tab["tabRenderer"]:
+                            if len(re.findall(tabs_url_map[content_type], tab["tabRenderer"]["endpoint"]["commandMetadata"]["webCommandMetadata"]["url"])) > 0 and tab["tabRenderer"]["selected"] is True:
+                                tabFound = True
+                                break
+                
+                if tabFound is False:
+                    break
+            
+            next_data = get_next_data(data, sort_by)    
+            
             is_first = False
-            if sort_by and sort_by != "newest": 
-                continue
+            
+            # If next_data is empty we jump to generator construction and then quit
+            if content_type is not None:
+                if next_data is not None and sort_by and sort_by != "newest": 
+                    continue
         else:
+            # Sometimes, videoRender isn't present when get_channel is the caller here
             data = get_ajax_data(session, api_endpoint, api_key, next_data, client)
             next_data = get_next_data(data)
+            
+        # When a channel tab is called, Youtube can use videoRenderer or lockupViewModel
+        # So we change selector_item if we found lockupViewModel
+        if content_type is not None:
+            if next(search_dict(data, "lockupViewModel"), None) is not None:
+                selector_item = "lockupViewModel"
+            elif next(search_dict(data, "shortsLockupViewModel"), None) is not None:
+                selector_item = "shortsLockupViewModel"
+
         for result in get_videos_items(data, selector_item):
             try:
                 count += 1
+                if content_type is not None:    
+                    # When we get videos of channel, set videoId, title and is_live values according to presence of videoRenderer or lockupViewModel
+                    result = set_video_info(content_type, result, selector_item)
                 yield result
                 if count == limit:
                     quit_it = True
@@ -246,7 +287,6 @@ def get_videos(
 
     session.close()
 
-
 def get_session(proxies: dict = None) -> requests.Session:
     session = requests.Session()
     if proxies:
@@ -254,7 +294,7 @@ def get_session(proxies: dict = None) -> requests.Session:
     session.headers[
         "User-Agent"
     ] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-    session.headers["Accept-Language"] = "en"
+    session.headers["Accept-Language"] = "fr"
     return session
 
 def get_initial_data(session: requests.Session, url: str) -> str:
@@ -263,7 +303,6 @@ def get_initial_data(session: requests.Session, url: str) -> str:
 
     html = response.text
     return html
-
 
 def get_ajax_data(
     session: requests.Session,
@@ -293,9 +332,14 @@ def get_next_data(data: dict, sort_by: str = None) -> dict:
         "popular": 1,
         "oldest": 2, 
     }
+    
     if sort_by and sort_by != "newest":
-        endpoint = next(
-            search_dict(data, "feedFilterChipBarRenderer"), None)["contents"][sort_by_map[sort_by]]["chipCloudChipRenderer"]["navigationEndpoint"]
+        # When only few videos are present in a tab, no filter options are displayed so chipBarViewModel don't exist.
+        nextchipBarViewModel = next(search_dict(data, "chipBarViewModel"), None)
+        if nextchipBarViewModel is not None:
+            endpoint = nextchipBarViewModel["chips"][sort_by_map[sort_by]]["chipViewModel"]["tapCommand"]["innertubeCommand"]
+        else:
+            endpoint = None
     else:
         endpoint = next(search_dict(data, "continuationEndpoint"), None)
     if not endpoint:
@@ -306,8 +350,7 @@ def get_next_data(data: dict, sort_by: str = None) -> dict:
     }
 
     return next_data
-
-
+  
 def search_dict(partial: dict, search_key: str) -> Generator[dict, None, None]:
     stack = [partial]
     while stack:
@@ -325,3 +368,42 @@ def search_dict(partial: dict, search_key: str) -> Generator[dict, None, None]:
 
 def get_videos_items(data: dict, selector: str) -> Generator[dict, None, None]:
     return search_dict(data, selector)
+
+def set_video_info(content_type, result, selector_item):
+    # videos or streams
+    if selector_item == "videoRenderer":
+        result["videoId"] = result["videoId"]                
+        result["title"] = result['title']['runs'][0]['text']
+
+        result["is_live"] = False
+        thumbnailOverlayTimeStatusRenderer_style = safely_get_value_from_key(result, 'thumbnailOverlays', 0, 'thumbnailOverlayTimeStatusRenderer', "style")
+        if thumbnailOverlayTimeStatusRenderer_style is not None and thumbnailOverlayTimeStatusRenderer_style == "LIVE":
+            result["is_live"] = True    
+    # videos or streams
+    elif selector_item == "lockupViewModel":
+        result["videoId"] = result["contentId"]
+        result["title"] = result["metadata"]["lockupMetadataViewModel"]["title"]["content"]
+        
+        result["is_live"] = False
+        thumbnailBadgeViewModel_badgeStyle = safely_get_value_from_key(result, "contentImage", "thumbnailViewModel", "overlays", 0, "thumbnailBottomOverlayViewModel", "badges", 0, "thumbnailBadgeViewModel", "badgeStyle")
+        if thumbnailBadgeViewModel_badgeStyle is not None and thumbnailBadgeViewModel_badgeStyle == 'THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE':
+            result["is_live"] = True
+    # shorts
+    elif selector_item == "shortsLockupViewModel":
+        result["videoId"] = result["onTap"]["innertubeCommand"]["reelWatchEndpoint"]["videoId"]
+        result["title"] = result["overlayMetadata"]["primaryText"]["content"]
+        result["is_live"] = False
+        
+    return result
+    
+def safely_get_value_from_key(*args, default=None):
+    obj = args[0]
+    keys = args[1:]
+
+    for key in keys:
+        try:
+            obj = obj[key]
+        except Exception:
+            return default
+
+    return obj   
