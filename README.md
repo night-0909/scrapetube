@@ -2,7 +2,7 @@
 scrapetube had problems due to Youtube changes :
 - Youtube mixes three structures for videos listing : videoRenderer, lockupViewModel and shortsLockupViewModel.
 - Youtube can return some videos when demanded tab don't exists, eg it returns Streams videos if channel has no stream but has regular videos.
-- That's the case when Home tab isn't present in channel.
+That's the case when Home tab isn't present in channel.
 - Youtube tabs don't have filter options when there's not enough videos.
 - popular and oldest filter when presents for a tab are not working anymore, as Youtube updated their structure.<br />
 
