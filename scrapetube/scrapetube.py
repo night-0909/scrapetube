@@ -258,8 +258,8 @@ def get_videos(
             data = get_ajax_data(session, api_endpoint, api_key, next_data, client)
             next_data = get_next_data(data)
             
-        # When a channel tab is called, Youtube can use videoRenderer or lockupViewModel
-        # So we change selector_item if we found lockupViewModel
+        # When a channel tab is called, Youtube can use multiple renderer : videoRenderer, lockupViewModel or shortsLockupViewModel
+        # So we change selector_item
         if content_type is not None:
             if next(search_dict(data, "lockupViewModel"), None) is not None:
                 selector_item = "lockupViewModel"
@@ -270,7 +270,7 @@ def get_videos(
             try:
                 count += 1
                 if content_type is not None:    
-                    # When we get videos of channel, set videoId, title and is_live values according to presence of videoRenderer or lockupViewModel
+                    # When we get videos of channel, set videoId, title and is_live values according to renderer used
                     result = set_video_info(content_type, result, selector_item)
                 yield result
                 if count == limit:
