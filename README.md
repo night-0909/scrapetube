@@ -8,6 +8,21 @@ That's the case when Home tab isn't present in channel.
 
 videoId, title and is_live are properties directly available when iterating on scrapetube.get_channel()<br />
 
+# Warning
+As Youtube auto-translate some elements (channel title, video title/description, etc...) based on your location, video title/description
+can be auto-translated.<br />
+    
+So when you iterate on scrapetube.get_channel(), title can be auto-translated in session.headers["Accept-Language"] language set below.<br />
+To retrieve the title/description from the default language or added language by the channel owner :<br />
+get title and description from Youtube Data Api V3 /videos on each videos<br />
+or hit watch?v= and get title and description from ytPlayerResponse->videoDetails<br />
+or get snippet.defaultLanguage from Youtube Data Api V3 /channels and set it in header Accept-Language or set a cookie name:PREF
+value:hl=XX // but defaultLanguage isn't always present<br />
+
+In the end, don't use videos title when iterating scrapetube.get_channel().<br />
+I personally use Youtube Data Api V3 /videos because its faster and hitting watch?v= too much could trigger anti-bot detection and need loging in to
+Youtube or solving captcha.<br />
+
 To install this version of scrapetube, download all files then type :
 ```bash
 pip3 install .
