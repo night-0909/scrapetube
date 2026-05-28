@@ -16,7 +16,7 @@ tabs_url_map = {
     "streams": "/@(.*)/streams",
     "shorts": "/@(.*)/shorts"
 }
-
+       
 def get_channel(
     channel_id: str = None,
     channel_url: str = None,
@@ -68,6 +68,9 @@ def get_channel(
             ``"shorts"``: Shorts
             ``"streams"``: Streams
     """
+
+    global channelId
+    channelId = channel_id
 
     base_url = ""
     if channel_url:
@@ -287,14 +290,25 @@ def get_videos(
 
     session.close()
 
-def get_session(proxies: dict = None) -> requests.Session:
+def get_session(proxies: dict = None) -> requests.Session:   
     session = requests.Session()
     if proxies:
         session.proxies.update(proxies)
     session.headers[
         "User-Agent"
     ] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-    session.headers["Accept-Language"] = "fr"
+    session.headers["Accept-Language"] = "en"
+    
+    # Warning : as Youtube auto-translate some elements (channel titles, video titles/descriptions, etc...) based on your location, video titles/description
+    # can be auto-translated.
+    
+    # So when you iterate on scrapetube.get_channel(), title can be auto-translated in session.headers["Accept-Language"] language set below
+    # To retrieve the title/description from the default language or added language by the channel owner :
+    # get title and description from Youtube Data Api V3 /videos on each videos
+    # or hit watch?v= and get title and description from ytPlayerResponse->videoDetails
+    # or get snippet.defaultLanguage from Youtube Data Api V3 /channels and set it in header Accept-Language or set a cookie name:PREF
+    # value:hl=XX // but defaultLanguage isn't always present
+    
     return session
 
 def get_initial_data(session: requests.Session, url: str) -> str:
@@ -370,6 +384,9 @@ def get_videos_items(data: dict, selector: str) -> Generator[dict, None, None]:
     return search_dict(data, selector)
 
 def set_video_info(content_type, result, selector_item):
+    # Warning of video title and description languages
+    # To get these infos in original language, read comment in get_session()
+    
     # videos or streams
     if selector_item == "videoRenderer":
         result["videoId"] = result["videoId"]                
