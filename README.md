@@ -4,7 +4,8 @@ scrapetube had problems due to Youtube changes :
 - Youtube can return some videos when demanded tab don't exists, eg it returns Streams videos if channel has no stream but has regular videos.
 That's the case when Home tab isn't present in channel.
 - Youtube tabs don't have filter options when there's not enough videos.
-- popular and oldest filter when presents for a tab are not working anymore, as Youtube updated their structure.<br />
+- popular and oldest filters when present for a tab are not working anymore, as Youtube updated their structure.<br />
+- popular and oldest filters are not working when channel has member subscriptions activated.<br />
 
 videoId, title and is_live are properties directly available when iterating on scrapetube.get_channel()<br />
 
