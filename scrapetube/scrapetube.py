@@ -257,7 +257,7 @@ def get_videos(
                 if next_data is not None and sort_by and sort_by != "newest": 
                     continue
         else:
-            # Sometimes, videoRender isn't present when get_channel is the caller here
+            # Sometimes, videoRenderer isn't present when get_channel is the caller here
             data = get_ajax_data(session, api_endpoint, api_key, next_data, client)
             next_data = get_next_data(data)
             
@@ -347,11 +347,35 @@ def get_next_data(data: dict, sort_by: str = None) -> dict:
         "oldest": 2, 
     }
     
+    # Warning : when members subscriptions are active on channel, newest/popular/oldest filters are embedded in
+    # chipBarViewModel->["chips"][0]["chipViewModel"]["tapCommand"]["innertubeCommand"]["showSheetCommand"]
     if sort_by and sort_by != "newest":
         # When only few videos are present in a tab, no filter options are displayed so chipBarViewModel don't exist.
         nextchipBarViewModel = next(search_dict(data, "chipBarViewModel"), None)
         if nextchipBarViewModel is not None:
-            endpoint = nextchipBarViewModel["chips"][sort_by_map[sort_by]]["chipViewModel"]["tapCommand"]["innertubeCommand"]
+            # Search for presence of showSheetCommand (channel with members subscriptions)
+            firstFilter = nextchipBarViewModel["chips"][0]["chipViewModel"]["tapCommand"]["innertubeCommand"]
+            if "showSheetCommand" in firstFilter:
+                listFilters = next(search_dict(firstFilter, "listItems"), None)
+                endpoint = listFilters[sort_by_map[sort_by]]["listItemViewModel"]["rendererContext"]["commandContext"]["onTap"]["innertubeCommand"]
+                if not endpoint:
+                    return None
+                    
+                commands = endpoint["commandExecutorCommand"]["commands"]
+                for command in commands:
+                    token = safely_get_value_from_key(command, 'continuationCommand', "token")
+                    if token is not None:
+                        clickTrackingParams = command["clickTrackingParams"]
+                        break
+                
+                next_data = {
+                    "token": token,
+                    "click_params": {"clickTrackingParams": clickTrackingParams},
+                }
+
+                return next_data
+            else:
+                endpoint = nextchipBarViewModel["chips"][sort_by_map[sort_by]]["chipViewModel"]["tapCommand"]["innertubeCommand"]
         else:
             endpoint = None
     else:
@@ -384,7 +408,7 @@ def get_videos_items(data: dict, selector: str) -> Generator[dict, None, None]:
     return search_dict(data, selector)
 
 def set_video_info(content_type, result, selector_item):
-    # Warning of video title and description languages
+    # Warning for video title and description languages
     # To get these infos in original language, read comment in get_session()
     
     # videos or streams
