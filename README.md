@@ -9,6 +9,12 @@ That's the case when Home tab isn't present in channel.
 
 videoId, title and is_live are properties directly available when iterating on scrapetube.get_channel()<br />
 
+Features added :
+- cookies support.
+- retry mechanism.
+- raise exceptions especially when specific html content isn't found.
+- logging errors.
+
 # Warning
 As Youtube auto-translate some elements (channel title, video title/description, etc...) based on your location, video title/description
 can be auto-translated.<br />
