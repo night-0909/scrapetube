@@ -1,9 +1,14 @@
 import json, re
-import time
+import time, os, sys
 from typing import Generator
 
 import requests
+from urllib3.util.retry import Retry
+from http.cookiejar import MozillaCookieJar
 from typing_extensions import Literal
+
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 type_property_map = {
     "videos": "videoRenderer",
@@ -16,6 +21,17 @@ tabs_url_map = {
     "streams": "/@(.*)/streams",
     "shorts": "/@(.*)/shorts"
 }
+
+LOGGING = {"enabled": True, "tzinfo": ZoneInfo("Europe/Paris"),
+            "dateFormats": {"dateString": "%d/%m/%Y %H:%M:%S", "dateDBString": "%Y-%m-%d %H:%M:%S", "dateFileString": "%d%m%Y%H%M%S"},
+            "logfilename": os.path.dirname(os.path.realpath(__file__)) + "/scrapetube.log"}
+
+RETRY_STRATEGY = {"requests_module":
+                    {"retries": 3, "backoff_factor": 1, "backoff_jitter": 0.5,
+                    "allowed_methods": frozenset(["GET", "POST", "HEAD", "OPTIONS"]), "status_forcelist": (408, 425, 429, 500, 502, 503, 504)},
+                 "error_html": {"retries": 3, "sleep_after_error": 5}
+}
+CALLING_FILE = sys.argv[0]
        
 def get_channel(
     channel_id: str = None,
@@ -24,6 +40,9 @@ def get_channel(
     limit: int = None,
     sleep: float = 1,
     proxies: dict = None,
+    cookies: str = None,
+    logging: dict = LOGGING,
+    retry_strategy: dict = RETRY_STRATEGY,
     sort_by: Literal["newest", "oldest", "popular"] = "newest",
     content_type: Literal["videos", "shorts", "streams"] = "videos",
 ) -> Generator[dict, None, None]:
@@ -69,12 +88,9 @@ def get_channel(
             ``"streams"``: Streams
     """
 
-    global channelId
-    channelId = channel_id
-
     base_url = ""
     if channel_url:
-        base_url = channel_url
+        base_url = channel_url+'ezee'
     elif channel_id:
         base_url = f"https://www.youtube.com/channel/{channel_id}"
     elif channel_username:
@@ -86,13 +102,13 @@ def get_channel(
     )
     api_endpoint = "https://www.youtube.com/youtubei/v1/browse"
        
-    videos = get_videos(url, api_endpoint, "contents", type_property_map[content_type], content_type, limit, sleep, proxies, sort_by)
+    videos = get_videos(url, api_endpoint, "contents", type_property_map[content_type], content_type, limit, sleep, proxies, cookies, logging, retry_strategy, sort_by)
     for video in videos:
         yield video
 
 
 def get_playlist(
-    playlist_id: str, limit: int = None, sleep: int = 1, proxies: dict = None
+    playlist_id: str, limit: int = None, sleep: int = 1, proxies: dict = None, cookies: str = None, logging: dict = LOGGING, retry_strategy: dict = RETRY_STRATEGY
 ) -> Generator[dict, None, None]:
 
     """Get videos for a playlist.
@@ -115,7 +131,7 @@ def get_playlist(
 
     url = f"https://www.youtube.com/playlist?list={playlist_id}"
     api_endpoint = "https://www.youtube.com/youtubei/v1/browse"
-    videos = get_videos(url, api_endpoint, "playlistVideoListRenderer", "playlistVideoRenderer", None, limit, sleep, proxies)
+    videos = get_videos(url, api_endpoint, "playlistVideoListRenderer", "playlistVideoRenderer", None, limit, sleep, proxies, cookies, logging, retry_strategy)
     for video in videos:
         yield video
 
@@ -127,6 +143,10 @@ def get_search(
     sort_by: Literal["relevance", "upload_date", "view_count", "rating"] = "relevance",
     results_type: Literal["video", "channel", "playlist", "movie"] = "video",
     proxies: dict = None,
+    cookies: str = None,
+    logging: dict = LOGGING,
+    retry_strategy: dict = RETRY_STRATEGY,
+    
 ) -> Generator[dict, None, None]:
 
     """Search youtube and get videos.
@@ -178,7 +198,7 @@ def get_search(
     url = f"https://www.youtube.com/results?search_query={query}&sp={param_string}"
     api_endpoint = "https://www.youtube.com/youtubei/v1/search"
     videos = get_videos(
-        url, api_endpoint, "contents", results_type_map[results_type][1], None, limit, sleep, proxies
+        url, api_endpoint, "contents", results_type_map[results_type][1], None, limit, sleep, proxies, cookies, logging, retry_strategy
     )
     for video in videos:
         yield video
@@ -187,6 +207,10 @@ def get_search(
 
 def get_video(
     id: str,
+    proxies: dict = None,
+    cookies: str = None,
+    logging: dict = LOGGING,
+    retry_strategy: dict = RETRY_STRATEGY
 ) -> dict:
 
     """Get a single video.
@@ -196,40 +220,105 @@ def get_video(
             The video id from the video you want to get.
     """
 
-    session = get_session()
+    session = get_session(proxies, cookies, retry_strategy)
     url = f"https://www.youtube.com/watch?v={id}"
-    html = get_initial_data(session, url)
-    client = json.loads(
-        get_json_from_html(html, "INNERTUBE_CONTEXT", 2, '"}},') + '"}}'
-    )["client"]
+    
+    try:
+        html = get_initial_data(session, url)
+    except Exception as e:
+        print("Exception in requests call getting initial data")
+        raise(e)
+        
+    try:        
+        client = json.loads(
+            get_json_from_html(html, "INNERTUBE_CONTEXT", 2, '"}},') + '"}}'
+        )["client"]
+    except Exception as e:
+        print("Error getting INNERTUBE_CONTEXT")
+        raise(e)
+        
     session.headers["X-YouTube-Client-Name"] = "1"
     session.headers["X-YouTube-Client-Version"] = client["clientVersion"]
-    data = json.loads(
-        get_json_from_html(html, "var ytInitialData = ", 0, "};") + "}"
-    )
+    
+    try: 
+        data = json.loads(
+            get_json_from_html(html, "var ytInitialData = ", 0, "};") + "}"
+        )
+    except Exception as e:
+        print("Error getting var ytInitialData = ")
+        raise(e)
+        
     return next(search_dict(data, "videoPrimaryInfoRenderer"))
 
-
-
 def get_videos(
-    url: str, api_endpoint: str, selector_list: str, selector_item: str, content_type: str, limit: int, sleep: float, proxies: dict = None, sort_by: str = None
+    url: str, api_endpoint: str, selector_list: str, selector_item: str, content_type: str, limit: int, sleep: float, proxies: dict, cookies: str, logging: dict, retry_strategy: dict, sort_by: str = None
 ) -> Generator[dict, None, None]:
-    session = get_session(proxies)
+    session = get_session(proxies, cookies, retry_strategy)
     is_first = True
     quit_it = False
     count = 0
+    attempt_initial_data = 0
+    exceptions = []   
+
     while True:
-        if is_first:
-            html = get_initial_data(session, url)
-            client = json.loads(
-                get_json_from_html(html, "INNERTUBE_CONTEXT", 2, '"}},') + '"}}'
-            )["client"]
-            api_key = get_json_from_html(html, "innertubeApiKey", 3)
-            session.headers["X-YouTube-Client-Name"] = "1"
-            session.headers["X-YouTube-Client-Version"] = client["clientVersion"]
-            data = json.loads(
-                get_json_from_html(html, "var ytInitialData = ", 0, "};") + "}"
-            )
+        if is_first:           
+            # Sometimes Youtube doesn't return expected content ("var ytInitialData = " not present), so we try to call get_initial_data() again.
+            # Solutions :
+            # - using cookies : solves it.
+            # - browser impersonation ? Not tested
+            if attempt_initial_data < retry_strategy['error_html']['retries']:
+                try:
+                    html = get_initial_data(session, url)
+                except Exception as e:
+                    dateNow = getDateNow(logging)["dateString"]
+                    log(logging, f"{dateNow} : {CALLING_FILE} {url} Exception in requests call getting initial data : {e}")                   
+                    print("Exception in requests call getting initial data")
+                    raise(e)
+                
+                try:
+                    INNERTUBE_CONTEXT = get_json_from_html(html, "INNERTUBE_CONTEXT", 2, '"}},') + '"}}'
+                    client = json.loads(INNERTUBE_CONTEXT)["client"]
+                except Exception as e:
+                    dateNow = getDateNow(logging)["dateString"]
+                    exceptions.append(f"{dateNow} : {url} Can't get ytInitialData from initial data : {e}")
+                    log(logging, f"{dateNow} : {CALLING_FILE} {url} Can't get INNERTUBE_CONTEXT from initial data : {e}")
+                    
+                    is_first = True
+                    attempt_initial_data = attempt_initial_data + 1
+                    time.sleep(retry_strategy['error_html']['sleep_after_error'])
+                    continue
+                
+                try:
+                    api_key = get_json_from_html(html, "innertubeApiKey", 3)            
+                except Exception as e:
+                    dateNow = getDateNow(logging)["dateString"]
+                    exceptions.append(f"{dateNow} : {url} Can't get ytInitialData from initial data : {e}")
+                    log(logging, f"{dateNow} : {CALLING_FILE} {url} Can't get innertubeApiKey from initial data : {e}")
+                            
+                    is_first = True
+                    attempt_initial_data = attempt_initial_data + 1
+                    time.sleep(retry_strategy['error_html']['sleep_after_error'])
+                    continue
+                
+                session.headers["X-YouTube-Client-Name"] = "1"
+                session.headers["X-YouTube-Client-Version"] = client["clientVersion"]
+                
+                try:
+                    ytInitialData = get_json_from_html(html, "var ytInitialData = ", 0, "};") + "}"
+                    data = json.loads(ytInitialData)
+                except Exception as e:   
+                    dateNow = getDateNow(logging)["dateString"]
+                    exceptions.append(f"{dateNow} : {url} Can't get ytInitialData from initial data : {e}")
+                    log(logging, f"{dateNow} : {CALLING_FILE} {url} Can't get ytInitialData from initial data : {e}")                   
+                    
+                    is_first = True
+                    attempt_initial_data = attempt_initial_data + 1
+                    time.sleep(retry_strategy['error_html']['sleep_after_error'])
+                    continue
+            else:
+                dateNow = getDateNow(logging)["dateString"]
+                log(logging, f"{dateNow} : {CALLING_FILE} {url} Can't get Youtube vars from initial data after {retry_strategy['error_html']['retries']} retries\nHistory of exceptions : {CALLING_FILE} {exceptions}")
+                raise Exception(f"{dateNow} : {url} Can't get Youtube vars from initial data after {retry_strategy['error_html']['retries']} retries\nHistory of exceptions : {exceptions}")
             
             # For get_channel we search "contents"
             data = next(search_dict(data, selector_list), None)
@@ -257,9 +346,14 @@ def get_videos(
                 if next_data is not None and sort_by and sort_by != "newest": 
                     continue
         else:
-            # Sometimes, videoRenderer isn't present when get_channel is the caller here
-            data = get_ajax_data(session, api_endpoint, api_key, next_data, client)
-            next_data = get_next_data(data)
+            try:
+                data = get_ajax_data(session, api_endpoint, api_key, next_data, client)
+                next_data = get_next_data(data)
+            except Exception as e:
+                dateNow = getDateNow(logging)["dateString"]
+                log(logging, f"{dateNow} : {CALLING_FILE} {url} Exception in getting next data : {e}")                   
+                print("Exception in getting next data")
+                raise e       
             
         # When a channel tab is called, Youtube can use multiple renderer : videoRenderer, lockupViewModel or shortsLockupViewModel
         # So we change selector_item
@@ -273,7 +367,7 @@ def get_videos(
             try:
                 count += 1
                 if content_type is not None:    
-                    # When we get videos of channel, set videoId, title and is_live values according to renderer used
+                    # When we get videos of channel, set videoId, title and is_live values according to used renderer
                     result = set_video_info(content_type, result, selector_item)
                 yield result
                 if count == limit:
@@ -290,7 +384,7 @@ def get_videos(
 
     session.close()
 
-def get_session(proxies: dict = None) -> requests.Session:   
+def get_session(proxies: dict = None, cookies: str = None, retry_strategy: dict = RETRY_STRATEGY) -> requests.Session:
     session = requests.Session()
     if proxies:
         session.proxies.update(proxies)
@@ -298,22 +392,45 @@ def get_session(proxies: dict = None) -> requests.Session:
         "User-Agent"
     ] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
     session.headers["Accept-Language"] = "en"
+       
+    if cookies:
+        if os.path.isfile(cookies):
+            cookie_jar = MozillaCookieJar(cookies)
+            cookie_jar.load(ignore_discard=True)
+            session.cookies = cookie_jar
+    else:
+        session.cookies.set("CONSENT", "YES+cb", domain=".youtube.com")
+
+    retry = Retry(
+        total=retry_strategy['requests_module']['retries'],
+        backoff_factor=retry_strategy['requests_module']['backoff_factor'],
+        backoff_jitter=retry_strategy['requests_module']['backoff_jitter'],
+        allowed_methods=retry_strategy['requests_module']['allowed_methods'],
+        status_forcelist=retry_strategy['requests_module']['status_forcelist'],
+        raise_on_status=True
+    )
+
+    adapter = requests.adapters.HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)    
+    return session
     
-    # Warning : as Youtube auto-translate some elements (channel titles, video titles/descriptions, etc...) based on your location, video titles/description
+    # Warning : as Youtube auto-translate some elements (channel title, video title/description, etc...) based on your location, video titles/description
     # can be auto-translated.
     
-    # So when you iterate on scrapetube.get_channel(), title can be auto-translated in session.headers["Accept-Language"] language set below
+    # So when you iterate on scrapetube.get_channel(), title can be auto-translated in session.headers["Accept-Language"] language set below or
+    # with language set 
     # To retrieve the title/description from the default language or added language by the channel owner :
     # get title and description from Youtube Data Api V3 /videos on each videos
-    # or hit watch?v= and get title and description from ytPlayerResponse->videoDetails
+    # or hit watch?v= and get title and description from ytPlayerResponse->videoDetails // complete get_video function for that
     # or get snippet.defaultLanguage from Youtube Data Api V3 /channels and set it in header Accept-Language or set a cookie name:PREF
     # value:hl=XX // but defaultLanguage isn't always present
-    
-    return session
 
-def get_initial_data(session: requests.Session, url: str) -> str:
-    session.cookies.set("CONSENT", "YES+cb", domain=".youtube.com")
-    response = session.get(url, params={"ucbcb":1})
+def get_initial_data(session: requests.Session, url: str) -> str:    
+    try:
+        response = session.get(url, params={"ucbcb":1}, timeout=(3.05, 20))
+    except Exception as e:
+        raise e
 
     html = response.text
     return html
@@ -329,15 +446,27 @@ def get_ajax_data(
         "context": {"clickTracking": next_data["click_params"], "client": client},
         "continuation": next_data["token"],
     }
-    response = session.post(api_endpoint, params={"key": api_key}, json=data)
+    
+    try:
+        response = session.post(api_endpoint, params={"key": api_key}, json=data, timeout=(3.05, 20))
+    except Exception as e:
+        raise e
+        
     return response.json()
 
-
 def get_json_from_html(html: str, key: str, num_chars: int = 2, stop: str = '"') -> str:
-    pos_begin = html.find(key) + len(key) + num_chars
-    pos_end = html.find(stop, pos_begin)
-    return html[pos_begin:pos_end]
+    pos_key = html.find(key)
 
+    if (pos_key < 0):
+        raise ValueError(f"Could not find key in YouTube HTML: {key}")
+
+    pos_begin = pos_key + len(key) + num_chars
+    pos_end = html.find(stop, pos_begin)
+
+    if (pos_end < 0):
+        raise ValueError(f"Could not find stop marker after key: {key}")
+
+    return html[pos_begin:pos_end]
 
 def get_next_data(data: dict, sort_by: str = None) -> dict:
     # Youtube, please don't change the order of these
@@ -448,3 +577,20 @@ def safely_get_value_from_key(*args, default=None):
             return default
 
     return obj   
+    
+def getDateNow(logging):
+    timestamp_now = datetime.now().timestamp()
+    date = datetime.fromtimestamp(timestamp_now, logging['tzinfo'])
+    dateString = date.strftime(logging['dateFormats']['dateString'])
+    dateDBString = date.strftime(logging['dateFormats']['dateDBString'])
+    dateFileString = date.strftime(logging['dateFormats']['dateFileString'])
+    
+    dateNow = {"dateString": dateString, "dateDBString": dateDBString, "dateFileString": dateFileString}
+    
+    return dateNow    
+    
+def log(logging, message):
+    if logging['enabled'] is True:
+        with open(logging['logfilename'], "a", encoding="utf-8") as f:
+            f.write(message + "\n")
+            f.flush()
