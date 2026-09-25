@@ -10,7 +10,7 @@ That's the case when Home tab isn't present in channel.
 videoId, title and is_live are properties directly available when iterating on scrapetube.get_channel()<br />
 
 Features added :
-- cookies support.
+- cookies support : useful to bypass bot detection, rate limits, access to members-only content, login required content.
 - retry mechanism.
 - raise exceptions especially when specific html content isn't found.
 - logging errors.
