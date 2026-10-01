@@ -280,7 +280,7 @@ def get_videos(
                     client = json.loads(INNERTUBE_CONTEXT)["client"]
                 except Exception as e:
                     dateNow = getDateNow(logging)["dateString"]
-                    exceptions.append(f"{dateNow} : {url} Can't get ytInitialData from initial data : {e}")
+                    exceptions.append(f"{dateNow} : {url} Can't get INNERTUBE_CONTEXT from initial data : {e}")
                     log(logging, f"{dateNow} : {CALLING_FILE} {url} Can't get INNERTUBE_CONTEXT from initial data : {e}")
                     
                     is_first = True
@@ -292,7 +292,7 @@ def get_videos(
                     api_key = get_json_from_html(html, "innertubeApiKey", 3)            
                 except Exception as e:
                     dateNow = getDateNow(logging)["dateString"]
-                    exceptions.append(f"{dateNow} : {url} Can't get ytInitialData from initial data : {e}")
+                    exceptions.append(f"{dateNow} : {url} Can't get innertubeApiKey from initial data : {e}")
                     log(logging, f"{dateNow} : {CALLING_FILE} {url} Can't get innertubeApiKey from initial data : {e}")
                             
                     is_first = True
